@@ -80,7 +80,7 @@ htpasswd -nbs user password      # SHA1
 openssl passwd -apr1 user        # MD5-crypt / apr1
 ```
 
-## Local plugin testing (before publishing)
+## Local usage plugin (without using a publication)
 
 Traefik plugins run through [yaegi](https://github.com/traefik/yaegi), not a compiler. Third-party
 dependencies (here, `golang.org/x/crypto/bcrypt`) have to be vendored, since Traefik won't run
@@ -100,6 +100,29 @@ experimental:
     flexbasicauth:
       modulename: github.com/stanislavtrubachev/flex-basic-auth-traefik
 ```
+
+## Installing without internet access
+
+The catalog mode (`experimental.plugins`) requires Traefik to reach the plugin registry
+backend at startup to download the module. That won't work on an air-gapped host. Use
+`experimental.localPlugins` instead (same mechanism as above): it never makes a network
+call, since yaegi only interprets files already on disk.
+
+This works offline because `vendor/` is already committed to this repository: nobody needs
+to run `go mod vendor` on the air-gapped host, or reach a Go module proxy at all. You only
+need to get the repository's files onto that host by any transport you already have,
+network or not:
+
+- `git clone` from an internal mirror, if you have one.
+- `scp`/`rsync` the repository directory from a machine that already has it.
+- A tarball on a USB drive: `tar czf flexbasicauth.tar.gz -C .. flex-basic-auth-traefik`,
+  copy it over, `tar xzf` on the target.
+
+Whichever way you move it, the result has to land at
+`plugins-local/src/github.com/stanislavtrubachev/flex-basic-auth-traefik` on the Traefik
+host (or be mounted there as a volume, if Traefik runs in a container), with `vendor/` and
+`.traefik.yml` included. Then enable it in the static configuration as shown above and
+restart Traefik. No outbound network access is needed at any point.
 
 ## Development
 
