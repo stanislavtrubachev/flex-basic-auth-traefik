@@ -94,7 +94,7 @@ automatically on every request, so the user logs in once and stays logged in, wi
 touching `Authorization`.
 
 <p align="center">
-  <img src="screenshot_login.png" alt="Mascot Harold" height="400"/>
+  <img src="./assets/screenshot_login.png" alt="Screenshot login form" height="400"/>
 </p>
 
 ### How browser and command-line clients are told apart
