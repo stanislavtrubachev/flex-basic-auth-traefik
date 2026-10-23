@@ -20,7 +20,7 @@ FlexBasicAuth reads Basic credentials from any header you pick (e.g. `X-Basic-Au
 through unmodified.
 
 <p align="center">
-  <img src="./assets/image_flexbasicauth_400x400.png" alt="Mascot FlexBasicAuth" width="400"/>
+  <img src="./assets/image_flexbasicauth_400x400.png" alt="Mascot FlexBasicAuth" width="300"/>
 </p>
 
 ## Configuration
