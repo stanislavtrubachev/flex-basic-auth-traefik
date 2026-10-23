@@ -13,6 +13,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"html/template"
 	"net/http"
 	"strconv"
 	"strings"
@@ -173,24 +174,106 @@ func (f *FlexBasicAuth) serveHeaderMode(rw http.ResponseWriter, req *http.Reques
 	f.next.ServeHTTP(rw, req)
 }
 
-// serveCookieMode: если в запросе уже есть Authorization — не вмешиваемся (git/API/OIDC
-// проходят как есть). Иначе ищем валидную сессионную куку. Форма логина появится на
-// следующем этапе — пока при её отсутствии просто отказ.
+// serveCookieMode: POST на loginPath обрабатывается как попытка логина. Иначе, если в
+// запросе уже есть Authorization — не вмешиваемся (git/API/OIDC проходят как есть).
+// Иначе ищем валидную сессионную куку; при её отсутствии отдаём форму логина.
 func (f *FlexBasicAuth) serveCookieMode(rw http.ResponseWriter, req *http.Request) {
+	if req.Method == http.MethodPost && req.URL.Path == f.loginPath {
+		f.handleLogin(rw, req)
+		return
+	}
+
 	if req.Header.Get("Authorization") != "" {
 		f.next.ServeHTTP(rw, req)
 		return
 	}
 
-	cookie, err := req.Cookie(f.cookieName)
-	if err == nil {
+	if cookie, err := req.Cookie(f.cookieName); err == nil {
 		if _, ok := verifySession(cookie.Value, f.cookieSecret); ok {
 			f.next.ServeHTTP(rw, req)
 			return
 		}
 	}
 
+	next := req.URL.RequestURI()
+	if req.URL.Path == f.loginPath {
+		next = "/"
+	}
+
+	f.writeLoginPage(rw, next, "")
+}
+
+func (f *FlexBasicAuth) handleLogin(rw http.ResponseWriter, req *http.Request) {
+	if err := req.ParseForm(); err != nil {
+		f.writeLoginPage(rw, "/", "Invalid form submission")
+		return
+	}
+
+	username := req.FormValue("username")
+	password := req.FormValue("password")
+	next := req.FormValue("next")
+
+	if !f.validate(username, password) {
+		f.writeLoginPage(rw, next, "Invalid username or password")
+		return
+	}
+
+	expiry := time.Now().Add(f.cookieTTL)
+
+	http.SetCookie(rw, &http.Cookie{
+		Name:     f.cookieName,
+		Value:    signSession(username, expiry, f.cookieSecret),
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  expiry,
+	})
+
+	http.Redirect(rw, req, sanitizeNext(next), http.StatusFound)
+}
+
+// sanitizeNext защищает от open redirect: разрешены только относительные пути,
+// не начинающиеся с "//" (protocol-relative URL).
+func sanitizeNext(next string) string {
+	if next == "" || next[0] != '/' || strings.HasPrefix(next, "//") {
+		return "/"
+	}
+
+	return next
+}
+
+type loginPageData struct {
+	Next      string
+	LoginPath string
+	Error     string
+}
+
+var loginPageTemplate = template.Must(template.New("flexbasicauth-login").Parse(`<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Sign in</title></head>
+<body>
+<h1>Sign in</h1>
+{{if .Error}}<p style="color:red">{{.Error}}</p>{{end}}
+<form method="POST" action="{{.LoginPath}}">
+<input type="hidden" name="next" value="{{.Next}}">
+<p><label>Username<br><input type="text" name="username" autofocus></label></p>
+<p><label>Password<br><input type="password" name="password"></label></p>
+<button type="submit">Sign in</button>
+</form>
+</body>
+</html>
+`))
+
+func (f *FlexBasicAuth) writeLoginPage(rw http.ResponseWriter, next, errMsg string) {
+	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
 	rw.WriteHeader(http.StatusUnauthorized)
+
+	_ = loginPageTemplate.Execute(rw, loginPageData{
+		Next:      sanitizeNext(next),
+		LoginPath: f.loginPath,
+		Error:     errMsg,
+	})
 }
 
 // signSession подписывает "<username>.<unix-время истечения>" через HMAC-SHA256.

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -540,5 +541,130 @@ func TestCookieMode_OtherCookiesUntouched(t *testing.T) {
 
 	if !strings.Contains(gotCookieHeader, "i_like_gitea=some-gitea-session") {
 		t.Fatalf("чужая кука потерялась при проксировании: Cookie=%q", gotCookieHeader)
+	}
+}
+
+func TestSanitizeNext(t *testing.T) {
+	tests := map[string]string{
+		"":                "/",
+		"/foo/bar":        "/foo/bar",
+		"//evil.com":      "/",
+		"http://evil.com": "/",
+		"relative/path":   "/",
+	}
+
+	for input, want := range tests {
+		if got := sanitizeNext(input); got != want {
+			t.Errorf("sanitizeNext(%q) = %q, ожидалось %q", input, got, want)
+		}
+	}
+}
+
+func TestCookieMode_GetWithoutCookieShowsLoginForm(t *testing.T) {
+	backend := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusOK)
+	})
+
+	handler := newCookieModeHandler(t, backend)
+
+	req := httptest.NewRequest(http.MethodGet, "/some/protected/page", nil)
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusUnauthorized {
+		t.Fatalf("ожидался код 401, получен %d", rw.Code)
+	}
+
+	body := rw.Body.String()
+	if !strings.Contains(body, `action="/__flexbasicauth/login"`) {
+		t.Fatalf("форма должна постить на loginPath, body: %s", body)
+	}
+
+	if !strings.Contains(body, `value="/some/protected/page"`) {
+		t.Fatalf("next должен указывать на исходный URL, body: %s", body)
+	}
+}
+
+func TestCookieMode_LoginSuccessSetsCookieAndRedirects(t *testing.T) {
+	backend := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusOK)
+	})
+
+	handler := newCookieModeHandler(t, backend)
+
+	form := url.Values{"username": {"test"}, "password": {"test"}, "next": {"/some/protected/page"}}
+	req := httptest.NewRequest(http.MethodPost, "/__flexbasicauth/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusFound {
+		t.Fatalf("ожидался код 302, получен %d", rw.Code)
+	}
+
+	if loc := rw.Header().Get("Location"); loc != "/some/protected/page" {
+		t.Fatalf("Location = %q, ожидалось %q", loc, "/some/protected/page")
+	}
+
+	cookies := rw.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "flex_basic_auth_session" {
+		t.Fatalf("ожидалась кука flex_basic_auth_session, получено %v", cookies)
+	}
+
+	if !cookies[0].HttpOnly || !cookies[0].Secure {
+		t.Fatal("кука должна быть HttpOnly и Secure")
+	}
+
+	username, ok := verifySession(cookies[0].Value, "s3cr3t")
+	if !ok || username != "test" {
+		t.Fatalf("кука должна быть валидна для test, получено username=%q ok=%v", username, ok)
+	}
+}
+
+func TestCookieMode_LoginSuccessSanitizesOpenRedirect(t *testing.T) {
+	backend := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusOK)
+	})
+
+	handler := newCookieModeHandler(t, backend)
+
+	form := url.Values{"username": {"test"}, "password": {"test"}, "next": {"//evil.com"}}
+	req := httptest.NewRequest(http.MethodPost, "/__flexbasicauth/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, req)
+
+	if loc := rw.Header().Get("Location"); loc != "/" {
+		t.Fatalf("Location = %q, ожидалось %q (open redirect не должен проходить)", loc, "/")
+	}
+}
+
+func TestCookieMode_LoginWrongPassword(t *testing.T) {
+	backend := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusOK)
+	})
+
+	handler := newCookieModeHandler(t, backend)
+
+	form := url.Values{"username": {"test"}, "password": {"wrong"}}
+	req := httptest.NewRequest(http.MethodPost, "/__flexbasicauth/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusUnauthorized {
+		t.Fatalf("ожидался код 401, получен %d", rw.Code)
+	}
+
+	if len(rw.Result().Cookies()) != 0 {
+		t.Fatal("при неверном пароле кука не должна выставляться")
+	}
+
+	if !strings.Contains(rw.Body.String(), "Invalid username or password") {
+		t.Fatal("ожидалось сообщение об ошибке в форме")
 	}
 }
