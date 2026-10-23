@@ -128,7 +128,7 @@ about the other.
 | Option         | Type   | Default                      | Description                                                             |
 |----------------|--------|-------------------------------|---------------------------------------------------------------------------|
 | `mode`         | string | `"header"`                    | `"header"` (default) or `"cookie"`.                                      |
-| `cookieName`   | string | *(required in cookie mode)*   | Name of the session cookie. Pick something that won't collide with the backend's own cookies (not `session`, not `i_like_gitea`, etc). |
+| `cookieName`   | string | *(required in cookie mode)*   | Name of the session cookie. Pick something that won't collide with the backend's own session cookie (e.g. not `session`, `auth`, or `connect.sid`). |
 | `cookieSecret` | string | *(required in cookie mode)*   | HMAC signing key for the session cookie. Treat it like a password: generate a random one, e.g. `openssl rand -hex 32`. |
 | `cookieTTL`    | string | `"24h"`                       | Session lifetime, as a Go duration (`h`/`m`/`s`, no `d` for days, use e.g. `168h` for a week). |
 | `loginPath`    | string | `"/__flexbasicauth/login"`    | Path the login form posts to. Pick something that doesn't collide with a real route on the backend. |
