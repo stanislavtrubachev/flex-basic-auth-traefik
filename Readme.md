@@ -4,6 +4,13 @@ A [Traefik](https://traefik.io) middleware plugin that works like the built-in `
 middleware, but reads the Basic credentials from a configurable request header instead of
 always using `Authorization`.
 
+<table>
+  <tr>
+    <td valign="top">
+      <img src="./assets/image_flexbasicauth_400x400.png" alt="Mascot FlexBasicAuth" width="300"/>
+    </td>
+    <td valign="top">
+
 ## Why
 
 Traefik's built-in `basicAuth` only reads credentials from `Authorization`. Its `headerField`
@@ -19,9 +26,9 @@ FlexBasicAuth reads Basic credentials from any header you pick (e.g. `X-Basic-Au
 `Authorization` alone when it isn't the configured header, so an OpenID Bearer token passes
 through unmodified.
 
-<p align="center">
-  <img src="./assets/image_flexbasicauth_400x400.png" alt="Mascot FlexBasicAuth" width="300"/>
-</p>
+    </td>
+  </tr>
+</table>
 
 ## Configuration
 
