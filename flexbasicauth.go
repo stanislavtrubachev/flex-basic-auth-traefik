@@ -251,16 +251,99 @@ type loginPageData struct {
 
 var loginPageTemplate = template.Must(template.New("flexbasicauth-login").Parse(`<!doctype html>
 <html>
-<head><meta charset="utf-8"><title>Sign in</title></head>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #f2f3f5;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .card {
+    width: 320px;
+    padding: 2rem;
+    background: #fff;
+    border-radius: 10px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+  }
+  .card h1 {
+    margin: 0 0 1.25rem;
+    font-size: 1.25rem;
+    color: #1a1a1a;
+  }
+  .field { margin-bottom: 1rem; }
+  .field label {
+    display: block;
+    margin-bottom: 0.3rem;
+    font-size: 0.85rem;
+    color: #555;
+  }
+  .field input {
+    width: 100%;
+    padding: 0.55rem 0.7rem;
+    border: 1px solid #d0d2d6;
+    border-radius: 6px;
+    font-size: 0.95rem;
+  }
+  .field input:focus {
+    outline: none;
+    border-color: #4c6ef5;
+    box-shadow: 0 0 0 3px rgba(76, 110, 245, 0.15);
+  }
+  button {
+    width: 100%;
+    padding: 0.6rem;
+    border: none;
+    border-radius: 6px;
+    background: #4c6ef5;
+    color: #fff;
+    font-size: 0.95rem;
+    cursor: pointer;
+  }
+  button:hover { background: #3b5bdb; }
+  .error {
+    margin: 0 0 1rem;
+    padding: 0.6rem 0.8rem;
+    border-radius: 6px;
+    background: #fff0f0;
+    color: #c92a2a;
+    font-size: 0.85rem;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #1a1b1e; }
+    .card { background: #25262b; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4); }
+    .card h1 { color: #e9ecef; }
+    .field label { color: #adb5bd; }
+    .field input { background: #1a1b1e; border-color: #3a3b40; color: #e9ecef; }
+    .error { background: #3a1f1f; color: #ff8787; }
+  }
+</style>
+</head>
 <body>
-<h1>Sign in</h1>
-{{if .Error}}<p style="color:red">{{.Error}}</p>{{end}}
-<form method="POST" action="{{.LoginPath}}">
-<input type="hidden" name="next" value="{{.Next}}">
-<p><label>Username<br><input type="text" name="username" autofocus></label></p>
-<p><label>Password<br><input type="password" name="password"></label></p>
-<button type="submit">Sign in</button>
-</form>
+<div class="card">
+  <h1>Sign in</h1>
+  {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+  <form method="POST" action="{{.LoginPath}}">
+    <input type="hidden" name="next" value="{{.Next}}">
+    <div class="field">
+      <label for="username">Username</label>
+      <input id="username" type="text" name="username" autofocus>
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input id="password" type="password" name="password">
+    </div>
+    <button type="submit">Sign in</button>
+  </form>
+</div>
 </body>
 </html>
 `))
