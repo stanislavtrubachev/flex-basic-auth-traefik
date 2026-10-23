@@ -1,15 +1,18 @@
 # FlexBasicAuth
-
-A [Traefik](https://traefik.io) middleware plugin that works like the built-in `basicAuth`
-middleware, but reads the Basic credentials from a configurable request header instead of
-always using `Authorization`.
-
-<table>
+<table border="0">
   <tr>
     <td valign="top">
       <img src="./assets/image_flexbasicauth_400x400.png" alt="Mascot FlexBasicAuth" width="300"/>
     </td>
     <td valign="top">
+  
+A [Traefik](https://traefik.io) middleware plugin that works like the built-in `basicAuth`
+middleware, but reads the Basic credentials from a configurable request header instead of
+always using `Authorization`.
+
+    </td>
+  </tr>
+</table>
 
 ## Why
 
@@ -25,10 +28,6 @@ edge and let the Bearer token through on the same route with the built-in middle
 FlexBasicAuth reads Basic credentials from any header you pick (e.g. `X-Basic-Auth`) and leaves
 `Authorization` alone when it isn't the configured header, so an OpenID Bearer token passes
 through unmodified.
-
-    </td>
-  </tr>
-</table>
 
 ## Configuration
 
