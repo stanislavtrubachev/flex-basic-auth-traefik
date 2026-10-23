@@ -94,23 +94,23 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		mode = "header"
 	}
 
-	if mode != "header" && mode != "cookie" {
-		return nil, fmt.Errorf("invalid mode %q: must be \"header\" or \"cookie\"", mode)
+	if mode != "header" && mode != "cookie" && mode != "hybrid" {
+		return nil, fmt.Errorf("invalid mode %q: must be \"header\", \"cookie\" or \"hybrid\"", mode)
 	}
 
 	var cookieName, cookieSecret, loginPath string
 
 	var cookieTTL time.Duration
 
-	if mode == "cookie" {
+	if mode == "cookie" || mode == "hybrid" {
 		cookieName = config.CookieName
 		if cookieName == "" {
-			return nil, fmt.Errorf("cookieName is required in cookie mode")
+			return nil, fmt.Errorf("cookieName is required in %q mode", mode)
 		}
 
 		cookieSecret = config.CookieSecret
 		if cookieSecret == "" {
-			return nil, fmt.Errorf("cookieSecret is required in cookie mode")
+			return nil, fmt.Errorf("cookieSecret is required in %q mode", mode)
 		}
 
 		loginPath = config.LoginPath
@@ -146,12 +146,14 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 }
 
 func (f *FlexBasicAuth) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	if f.mode == "cookie" {
+	switch f.mode {
+	case "cookie":
 		f.serveCookieMode(rw, req)
-		return
+	case "hybrid":
+		f.serveHybridMode(rw, req)
+	default:
+		f.serveHeaderMode(rw, req)
 	}
-
-	f.serveHeaderMode(rw, req)
 }
 
 func (f *FlexBasicAuth) serveHeaderMode(rw http.ResponseWriter, req *http.Request) {
@@ -202,6 +204,38 @@ func (f *FlexBasicAuth) serveCookieMode(rw http.ResponseWriter, req *http.Reques
 	if !strings.Contains(req.Header.Get("Accept"), "text/html") {
 		f.unauthorized(rw)
 		return
+	}
+
+	next := req.URL.RequestURI()
+	if req.URL.Path == f.loginPath {
+		next = "/"
+	}
+
+	f.writeLoginPage(rw, next, "")
+}
+
+// serveHybridMode: POST на loginPath — попытка логина. Браузерам (Accept: text/html) —
+// форма логина и сессионная кука, как в cookie mode. Всем остальным клиентам (git/curl/API,
+// Accept: */*) — обычная header-mode проверка configured header по users, без исключений:
+// в отличие от cookie mode, здесь нет bypass по присутствию Authorization, поэтому
+// configured header стоит делать отличным от Authorization (см. README), чтобы не мешать
+// собственной авторизации бэкенда (git-токены, OIDC Bearer и т.п.).
+func (f *FlexBasicAuth) serveHybridMode(rw http.ResponseWriter, req *http.Request) {
+	if req.Method == http.MethodPost && req.URL.Path == f.loginPath {
+		f.handleLogin(rw, req)
+		return
+	}
+
+	if !strings.Contains(req.Header.Get("Accept"), "text/html") {
+		f.serveHeaderMode(rw, req)
+		return
+	}
+
+	if cookie, err := req.Cookie(f.cookieName); err == nil {
+		if _, ok := verifySession(cookie.Value, f.cookieSecret); ok {
+			f.next.ServeHTTP(rw, req)
+			return
+		}
 	}
 
 	next := req.URL.RequestURI()

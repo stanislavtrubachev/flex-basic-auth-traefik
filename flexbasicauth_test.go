@@ -435,6 +435,133 @@ func TestNewInvalidMode(t *testing.T) {
 	}
 }
 
+func newHybridModeHandler(t *testing.T, backend http.Handler) http.Handler {
+	t.Helper()
+
+	cfg := CreateConfig()
+	cfg.Users = []string{bcryptUser}
+	cfg.Mode = "hybrid"
+	cfg.Header = "X-Basic-Auth"
+	cfg.CookieName = "flex_basic_auth_session"
+	cfg.CookieSecret = "s3cr3t"
+
+	handler, err := New(context.Background(), backend, cfg, "flex-basic-auth-hybrid-test")
+	if err != nil {
+		t.Fatalf("New() вернул ошибку: %v", err)
+	}
+
+	return handler
+}
+
+// TestHybridMode_NonBrowserRequiresValidHeader проверяет, что в hybrid mode (в отличие от
+// cookie mode) нет bypass по присутствию Authorization: клиент без валидного X-Basic-Auth
+// получает 401, даже если несёт какой угодно Authorization.
+func TestHybridMode_NonBrowserRequiresValidHeader(t *testing.T) {
+	backend := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusOK)
+	})
+
+	handler := newHybridModeHandler(t, backend)
+
+	req := httptest.NewRequest(http.MethodGet, "/repo.git/info/refs", nil)
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Authorization", "Bearer some-openid-token")
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusUnauthorized {
+		t.Fatalf("ожидался код 401 без валидного X-Basic-Auth, получен %d", rw.Code)
+	}
+}
+
+// TestHybridMode_NonBrowserWithValidHeaderPasses проверяет, что валидный configured header
+// проходит, а Authorization при этом остаётся нетронутым и доходит до бэкенда.
+func TestHybridMode_NonBrowserWithValidHeaderPasses(t *testing.T) {
+	var gotAuthorization string
+
+	backend := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		gotAuthorization = req.Header.Get("Authorization")
+		rw.WriteHeader(http.StatusOK)
+	})
+
+	handler := newHybridModeHandler(t, backend)
+
+	req := httptest.NewRequest(http.MethodGet, "/repo.git/info/refs", nil)
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("X-Basic-Auth", basicHeader("test", "test"))
+	req.Header.Set("Authorization", "Bearer some-openid-token")
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("ожидался код 200, получен %d", rw.Code)
+	}
+
+	if gotAuthorization != "Bearer some-openid-token" {
+		t.Fatalf("Authorization изменён: получено %q", gotAuthorization)
+	}
+}
+
+// TestHybridMode_BrowserGetsLoginForm проверяет, что браузер (Accept: text/html) без
+// валидной куки получает HTML-форму логина, а не 401-challenge от header-mode проверки.
+func TestHybridMode_BrowserGetsLoginForm(t *testing.T) {
+	backend := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusOK)
+	})
+
+	handler := newHybridModeHandler(t, backend)
+
+	req := httptest.NewRequest(http.MethodGet, "/some/protected/page", nil)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusUnauthorized {
+		t.Fatalf("ожидался код 401, получен %d", rw.Code)
+	}
+
+	if !strings.Contains(rw.Body.String(), `action="/__flexbasicauth/login"`) {
+		t.Fatalf("ожидалась HTML-форма логина, body: %s", rw.Body.String())
+	}
+}
+
+// TestHybridMode_BrowserWithValidCookiePasses проверяет, что валидная сессионная кука
+// пропускает браузерный запрос без какого-либо заголовка авторизации.
+func TestHybridMode_BrowserWithValidCookiePasses(t *testing.T) {
+	backend := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusOK)
+	})
+
+	handler := newHybridModeHandler(t, backend)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept", "text/html")
+	req.AddCookie(&http.Cookie{
+		Name:  "flex_basic_auth_session",
+		Value: signSession("test", time.Now().Add(time.Hour), "s3cr3t"),
+	})
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("ожидался код 200, получен %d", rw.Code)
+	}
+}
+
+func TestNewHybridMode_RequiresCookieNameAndSecret(t *testing.T) {
+	cfg := CreateConfig()
+	cfg.Users = []string{bcryptUser}
+	cfg.Mode = "hybrid"
+
+	if _, err := New(context.Background(), http.NotFoundHandler(), cfg, "t"); err == nil {
+		t.Fatal("ожидалась ошибка без cookieName/cookieSecret в hybrid mode")
+	}
+}
+
 func newCookieModeHandler(t *testing.T, backend http.Handler) http.Handler {
 	t.Helper()
 

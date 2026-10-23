@@ -80,6 +80,40 @@ spec:
       headerField: "X-Authenticated-User"
 ```
 
+### Example: protecting `git clone`/`push` without colliding with the backend's own auth
+
+Header mode checks the configured header on *every* request — unlike
+[cookie mode](#cookie-mode-a-browser-login-form-without-breaking-gitapioidc), it never steps
+aside just because a request already carries some other header. That makes it a better fit when
+you want FlexBasicAuth to actually gate `git clone`/`push`, not just the browser, while leaving
+`Authorization` completely free for the backend's own auth (a Git server login, a personal
+access token, …).
+
+The catch: plain `git` only ever sends credentials via `Authorization` — it has no built-in way
+to populate a custom header on its own. Point it at the configured header with
+[`http.extraHeader`](https://git-scm.com/docs/git-config#Documentation/git-config.txt-httpextraHeader):
+
+```bash
+echo -n "user:password" | base64
+# use the output below
+git -c http.extraHeader="X-Basic-Auth: Basic <base64 output above>" \
+  clone https://git.example.com/user/repo.git
+cd repo
+git config http.extraHeader "X-Basic-Auth: Basic <base64 output above>"   # keep it for future pull/push
+```
+
+Every request from that repository now carries `X-Basic-Auth`, which FlexBasicAuth validates
+against its own `users` list; `Authorization` is never touched, so the backend's own git auth
+(password, personal access token, …) keeps working exactly as before. The header value is
+base64, not encryption — treat it like a plaintext password (file permissions on `.git/config`,
+HTTPS only) — and set it with local `git config` (not `--global`) so it isn't sent to unrelated
+git hosts.
+
+Plain header mode has no login form at all, so it only makes sense when nothing human-facing
+ever hits this route. If humans also need to browse the same host in a browser, see
+[hybrid mode](#hybrid-mode-header-mode-gating-for-everyone-a-login-form-for-browsers) below,
+which applies this exact check to non-browser clients while still giving browsers a login form.
+
 ## Cookie mode: a browser login form without breaking git/API/OIDC
 
 Header mode has one limitation: a plain browser's native Basic Auth popup only ever sends
@@ -124,13 +158,21 @@ In short: a browser gets a real login page; a command-line client gets a normal 
 and authenticates however it already does against the backend. Neither one ever has to know
 about the other.
 
+This bypass rule is a deliberate trade-off, not a loophole: cookie mode's `users` list only ever
+gates browsers. Any client that already sends *some* `Authorization` — valid or not — skips
+FlexBasicAuth entirely and is fully at the mercy of whatever the backend itself does with it. If
+the backend doesn't properly reject bad or missing credentials on its own (for example, it
+allows anonymous access to something you meant to lock down), this bypass means FlexBasicAuth
+adds no protection there at all. If you need FlexBasicAuth itself to gate those clients too, use
+[hybrid mode](#hybrid-mode-header-mode-gating-for-everyone-a-login-form-for-browsers) instead.
+
 ### Configuration
 
 | Option         | Type   | Default                      | Description                                                             |
 |----------------|--------|-------------------------------|---------------------------------------------------------------------------|
-| `mode`         | string | `"header"`                    | `"header"` (default) or `"cookie"`.                                      |
-| `cookieName`   | string | *(required in cookie mode)*   | Name of the session cookie. Pick something that won't collide with the backend's own session cookie (e.g. not `session`, `auth`, or `connect.sid`). |
-| `cookieSecret` | string | *(required in cookie mode)*   | HMAC signing key for the session cookie. Treat it like a password: generate a random one, e.g. `openssl rand -hex 32`. |
+| `mode`         | string | `"header"`                    | `"header"` (default), `"cookie"`, or `"hybrid"`.                        |
+| `cookieName`   | string | *(required in cookie/hybrid mode)* | Name of the session cookie. Pick something that won't collide with the backend's own session cookie (e.g. not `session`, `auth`, or `connect.sid`). |
+| `cookieSecret` | string | *(required in cookie/hybrid mode)* | HMAC signing key for the session cookie. Treat it like a password: generate a random one, e.g. `openssl rand -hex 32`. |
 | `cookieTTL`    | string | `"24h"`                       | Session lifetime, as a Go duration (`h`/`m`/`s`, no `d` for days, use e.g. `168h` for a week). |
 | `loginPath`    | string | `"/__flexbasicauth/login"`    | Path the login form posts to. Pick something that doesn't collide with a real route on the backend. |
 
@@ -155,13 +197,13 @@ these credentials only control who gets past FlexBasicAuth, they have nothing to
 backend's own user accounts (a Git server login, API tokens, etc.), which keep working exactly as
 they did before, over `Authorization`.
 
-### Example: gating a Gitea web UI without breaking git/API
+### Example: gating a self-hosted Git server's web UI without breaking git/API
 
 ```yaml
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
-  name: gitea-flex-basic-auth
+  name: flex-basic-auth-cookie
 spec:
   plugin:
     flexbasicauth:
@@ -174,8 +216,61 @@ spec:
       loginPath: "/__flexbasicauth/login"
 ```
 
-Attach this middleware to the Gitea route. Browsing to the host shows a login form; `git
+Attach this middleware to the Git server's route. Browsing to the host shows a login form; `git
 clone`/`push` and API/token access keep working exactly as before, untouched.
+
+## Hybrid mode: header-mode gating for everyone, a login form for browsers
+
+Cookie mode's bypass rule means FlexBasicAuth never actually checks anything for clients that
+already send `Authorization` — it just steps aside and trusts the backend completely (see
+above). `mode: "hybrid"` removes that bypass: it dispatches on the same `Accept` header, but
+instead of trusting non-browser clients, it runs the exact same check as header mode on them —
+the configured `header`, validated against `users`, no exceptions. Browsers (`Accept:
+text/html`) still get the cookie-mode login form.
+
+- **Browser** (`Accept: text/html,...`) → login form + session cookie, identical to cookie mode.
+- **Everything else** (`git`, `curl`, API clients) → header-mode check: a valid, configured
+  `header` is required on every request, or it's a `401`. There is no exception for requests
+  that happen to carry `Authorization`.
+
+Because there's no bypass, `header` should point at something other than `Authorization` — same
+reasoning as plain header mode (see [Why](#why)): otherwise non-browser clients would have to
+authenticate twice with the same header, once against FlexBasicAuth's `users` and once against
+the backend's own accounts.
+
+```yaml
+http:
+  middlewares:
+    flex-basic-auth:
+      plugin:
+        flexbasicauth:
+          users:
+            - "admin:$apr1$..."
+          mode: "hybrid"
+          header: "X-Basic-Auth"
+          cookieName: "flex_basic_auth_session"
+          cookieSecret: "<openssl rand -hex 32>"
+          cookieTTL: "168h"
+```
+
+Browsing to the host shows the login form. `git`, unlike a browser, has no built-in way to send
+a custom header — add it with
+[`http.extraHeader`](https://git-scm.com/docs/git-config#Documentation/git-config.txt-httpextraHeader):
+
+```bash
+echo -n "admin:password" | base64
+# use the output below
+git -c http.extraHeader="X-Basic-Auth: Basic <base64 output above>" \
+  clone https://git.example.com/user/repo.git
+cd repo
+git config http.extraHeader "X-Basic-Auth: Basic <base64 output above>"   # keep it for future pull/push
+```
+
+Without this, `git clone`/`push` would get a plain `401` — hybrid mode has no bypass, so a bare
+`Authorization` (which is all `git` sends on its own) isn't enough; it needs the configured
+`X-Basic-Auth` header checked against `users`. Set it with local `git config` (not `--global`),
+since it's a plaintext credential in base64, not encryption, and would otherwise be sent to
+every git host you talk to.
 
 ## Generating password hashes
 
