@@ -214,9 +214,13 @@ func (f *FlexBasicAuth) serveCookieMode(rw http.ResponseWriter, req *http.Reques
 	f.writeLoginPage(rw, next, "")
 }
 
-// serveHybridMode: POST на loginPath — попытка логина. Браузерам (Accept: text/html) —
-// форма логина и сессионная кука, как в cookie mode. Всем остальным клиентам (git/curl/API,
-// Accept: */*) — обычная header-mode проверка configured header по users, без исключений:
+// serveHybridMode: POST на loginPath — попытка логина. Иначе сперва проверяем сессионную
+// куку независимо от Accept: браузер шлёт "text/html" в Accept только при навигации на сам
+// HTML-документ, а все подресурсы страницы (JS/CSS/картинки/fetch к API) идут с другим Accept,
+// но с той же кукой — если проверять Accept раньше куки, все эти запросы будут ошибочно
+// уходить в header-mode и получать 401 даже у залогиненного браузера. Только если валидной
+// куки нет, дальше решаем по Accept: браузеру (text/html) — форму логина, всем остальным
+// (git/curl/API) — обычную header-mode проверку configured header по users, без исключений:
 // в отличие от cookie mode, здесь нет bypass по присутствию Authorization, поэтому
 // configured header стоит делать отличным от Authorization (см. README), чтобы не мешать
 // собственной авторизации бэкенда (git-токены, OIDC Bearer и т.п.).
@@ -226,16 +230,16 @@ func (f *FlexBasicAuth) serveHybridMode(rw http.ResponseWriter, req *http.Reques
 		return
 	}
 
-	if !strings.Contains(req.Header.Get("Accept"), "text/html") {
-		f.serveHeaderMode(rw, req)
-		return
-	}
-
 	if cookie, err := req.Cookie(f.cookieName); err == nil {
 		if _, ok := verifySession(cookie.Value, f.cookieSecret); ok {
 			f.next.ServeHTTP(rw, req)
 			return
 		}
+	}
+
+	if !strings.Contains(req.Header.Get("Accept"), "text/html") {
+		f.serveHeaderMode(rw, req)
+		return
 	}
 
 	next := req.URL.RequestURI()

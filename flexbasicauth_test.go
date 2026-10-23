@@ -552,6 +552,34 @@ func TestHybridMode_BrowserWithValidCookiePasses(t *testing.T) {
 	}
 }
 
+// TestHybridMode_BrowserAssetRequestWithCookiePasses — регрессия: браузер шлёт
+// "Accept: text/html" только при навигации на сам документ, а запросы подресурсов
+// (JS/CSS/картинки/fetch к API) со страницы идут с другим Accept, но с той же кукой.
+// Если проверять Accept раньше куки, такие запросы ошибочно уходят в header-mode и
+// получают 401 даже у залогиненного браузера — именно это и означало "страница не
+// открывается" при валидной cookie.
+func TestHybridMode_BrowserAssetRequestWithCookiePasses(t *testing.T) {
+	backend := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusOK)
+	})
+
+	handler := newHybridModeHandler(t, backend)
+
+	req := httptest.NewRequest(http.MethodGet, "/static/app.js", nil)
+	req.Header.Set("Accept", "*/*")
+	req.AddCookie(&http.Cookie{
+		Name:  "flex_basic_auth_session",
+		Value: signSession("test", time.Now().Add(time.Hour), "s3cr3t"),
+	})
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("ожидался код 200 (валидная кука, Accept без text/html), получен %d", rw.Code)
+	}
+}
+
 func TestNewHybridMode_RequiresCookieNameAndSecret(t *testing.T) {
 	cfg := CreateConfig()
 	cfg.Users = []string{bcryptUser}
