@@ -195,6 +195,15 @@ func (f *FlexBasicAuth) serveCookieMode(rw http.ResponseWriter, req *http.Reques
 		}
 	}
 
+	// Нет Authorization, нет куки. Браузерам (Accept: text/html) показываем свою форму.
+	// Остальным клиентам (git/curl/API — Accept: */*) отдаём обычный 401 с
+	// WWW-Authenticate: Basic, чтобы они повторили запрос со своим Authorization
+	// (который дальше пройдёт через bypass-правило выше напрямую в бэкенд).
+	if !strings.Contains(req.Header.Get("Accept"), "text/html") {
+		f.unauthorized(rw)
+		return
+	}
+
 	next := req.URL.RequestURI()
 	if req.URL.Path == f.loginPath {
 		next = "/"

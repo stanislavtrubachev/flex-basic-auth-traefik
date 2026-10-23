@@ -568,6 +568,7 @@ func TestCookieMode_GetWithoutCookieShowsLoginForm(t *testing.T) {
 	handler := newCookieModeHandler(t, backend)
 
 	req := httptest.NewRequest(http.MethodGet, "/some/protected/page", nil)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 	rw := httptest.NewRecorder()
 
 	handler.ServeHTTP(rw, req)
@@ -666,5 +667,36 @@ func TestCookieMode_LoginWrongPassword(t *testing.T) {
 
 	if !strings.Contains(rw.Body.String(), "Invalid username or password") {
 		t.Fatal("ожидалось сообщение об ошибке в форме")
+	}
+}
+
+// TestCookieMode_NonBrowserGetsWWWAuthenticate — регрессия на кейс "git push ломается":
+// клиенты без Accept: text/html (git/curl/API) должны получать обычный 401 +
+// WWW-Authenticate: Basic, а не HTML-форму, иначе они не поймут, что нужно повторить
+// запрос с Authorization (который дальше ушёл бы напрямую в бэкенд по bypass-правилу).
+func TestCookieMode_NonBrowserGetsWWWAuthenticate(t *testing.T) {
+	backend := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusOK)
+	})
+
+	handler := newCookieModeHandler(t, backend)
+
+	req := httptest.NewRequest(http.MethodGet, "/absolem/repo.git/info/refs", nil)
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("User-Agent", "git/2.50.1")
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusUnauthorized {
+		t.Fatalf("ожидался код 401, получен %d", rw.Code)
+	}
+
+	if got := rw.Header().Get("WWW-Authenticate"); got != `Basic realm="traefik"` {
+		t.Fatalf("WWW-Authenticate = %q, ожидалось Basic-challenge", got)
+	}
+
+	if strings.Contains(rw.Body.String(), "<form") {
+		t.Fatal("нечто-браузерному клиенту не должна отдаваться HTML-форма логина")
 	}
 }

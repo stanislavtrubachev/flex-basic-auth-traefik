@@ -70,6 +70,96 @@ spec:
       headerField: "X-Authenticated-User"
 ```
 
+## Cookie mode: a browser login form without breaking git/API/OIDC
+
+Header mode has one limitation: a plain browser's native Basic Auth popup only ever sends
+credentials through `Authorization`. If you want a normal-looking browser login (no browser
+extension, no custom header) on a host where `Authorization` is already used for something
+else, header mode can't do it, since the native popup would collide with that.
+
+That's exactly the case for something like a Gitea server: `git clone`/`push` over HTTPS and
+API tokens all use `Authorization`. Set `mode: cookie` instead, and FlexBasicAuth serves its own
+login form and, after a successful login, sets a signed session cookie. Browsers send cookies
+automatically on every request, so the user logs in once and stays logged in, without ever
+touching `Authorization`.
+
+### How browser and command-line clients are told apart
+
+The same rule from header mode still applies and is the reason nothing breaks: **if a request
+already carries `Authorization`, FlexBasicAuth does not touch it at all** and passes the request
+straight through. `git`, API clients, and OIDC Bearer tokens all send `Authorization`, so they
+never see the cookie gate.
+
+For requests with no `Authorization` and no valid session cookie yet, FlexBasicAuth has to
+decide whether to show an HTML login page or a plain HTTP challenge, and it does that by
+checking the `Accept` header:
+
+- **Browser** (`Accept: text/html,...`) → gets the login form. Submitting it sets the session
+  cookie and redirects back to the page the user was trying to reach.
+- **Everything else** (`git`, `curl`, API clients, they send `Accept: */*`) → gets a plain
+  `401 Unauthorized` with `WWW-Authenticate: Basic`. That's the standard challenge these tools
+  already know how to react to: they retry the same request with their own `Authorization`
+  (credentials embedded in the remote URL, a credential helper, an API token, whatever they
+  already use for that host), which then goes straight through by the rule above, so the
+  backend's own auth (Gitea, an API, OIDC) handles it exactly as if FlexBasicAuth weren't there.
+
+In short: a browser gets a real login page; a command-line client gets a normal 401 challenge
+and authenticates however it already does against the backend. Neither one ever has to know
+about the other.
+
+### Configuration
+
+| Option         | Type   | Default                      | Description                                                             |
+|----------------|--------|-------------------------------|---------------------------------------------------------------------------|
+| `mode`         | string | `"header"`                    | `"header"` (default) or `"cookie"`.                                      |
+| `cookieName`   | string | *(required in cookie mode)*   | Name of the session cookie. Pick something that won't collide with the backend's own cookies (not `session`, not `i_like_gitea`, etc). |
+| `cookieSecret` | string | *(required in cookie mode)*   | HMAC signing key for the session cookie. Treat it like a password: generate a random one, e.g. `openssl rand -hex 32`. |
+| `cookieTTL`    | string | `"24h"`                       | Session lifetime, as a Go duration (`h`/`m`/`s`, no `d` for days, use e.g. `168h` for a week). |
+| `loginPath`    | string | `"/__flexbasicauth/login"`    | Path the login form posts to. Pick something that doesn't collide with a real route on the backend. |
+
+The cookie is set with `HttpOnly`, `Secure`, and `SameSite=Lax`, and no `Domain` attribute (so
+it's scoped to the exact host). It's read only by exact name, so any other cookies already in
+the request (a backend session cookie, a CSRF cookie, anything) are left untouched and still
+reach the backend normally.
+
+`users` works the same way as in header mode: it's a list, not a single account. Add one
+`login:hash` entry per person who needs browser access:
+
+```yaml
+users:
+  - "admin:$apr1$..."
+  - "alice:$apr1$..."
+```
+
+Each person logs in with their own entry, and the session cookie is signed with the username
+that actually logged in, so everyone gets their own independent session. This is still a gate
+in front of the backend, not a replacement for whatever login system the backend itself has:
+these credentials only control who gets past FlexBasicAuth, they have nothing to do with the
+backend's own user accounts (a Gitea login, API tokens, etc.), which keep working exactly as
+they did before, over `Authorization`.
+
+### Example: gating a Gitea web UI without breaking git/API
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: gitea-flex-basic-auth
+spec:
+  plugin:
+    flexbasicauth:
+      users:
+        - "admin:$apr1$..."
+      mode: "cookie"
+      cookieName: "flex_basic_auth_session"
+      cookieSecret: "<openssl rand -hex 32>"
+      cookieTTL: "168h"
+      loginPath: "/__flexbasicauth/login"
+```
+
+Attach this middleware to the Gitea route. Browsing to the host shows a login form; `git
+clone`/`push` and API/token access keep working exactly as before, untouched.
+
 ## Generating password hashes
 
 Any htpasswd-compatible tool works:
