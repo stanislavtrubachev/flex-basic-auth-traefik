@@ -93,6 +93,10 @@ login form and, after a successful login, sets a signed session cookie. Browsers
 automatically on every request, so the user logs in once and stays logged in, without ever
 touching `Authorization`.
 
+<p align="center">
+  <img src="screenshot_login.png" alt="Mascot Harold" height="400"/>
+</p>
+
 ### How browser and command-line clients are told apart
 
 The same rule from header mode still applies and is the reason nothing breaks: **if a request
