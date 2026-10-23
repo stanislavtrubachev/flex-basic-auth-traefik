@@ -1,0 +1,13 @@
+displayName: Flex Basic Auth
+type: middleware
+import: github.com/stanislavtrubachev/flex-basic-auth-traefik
+
+summary: 'BasicAuth-compatible middleware that reads credentials from a configurable request header instead of Authorization, allowing BasicAuth to coexist with Bearer tokens (e.g. OpenID Connect) on the same route.'
+
+testData:
+  users:
+    - "test:$apr1$H6uskkkW$IgXLP6ewTrSuBkTrqE8wj/" # example
+  header: "Authorization"
+  realm: "traefik"
+  removeHeader: false
+  headerField: ""

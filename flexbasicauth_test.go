@@ -323,3 +323,22 @@ func TestServeHTTP_HeaderFieldEmptyMeansNotSet(t *testing.T) {
 		t.Fatal("заголовок X-Authenticated-User не должен выставляться при пустом headerField")
 	}
 }
+
+// TestTraefikManifestTestData проверяет, что testData из .traefik.yml
+// действительно принимает пароль "test" для пользователя "test".
+func TestTraefikManifestTestData(t *testing.T) {
+	cfg := CreateConfig()
+	cfg.Users = []string{"test:$apr1$H6uskkkW$IgXLP6ewTrSuBkTrqE8wj/"}
+
+	handler := newTestHandler(t, cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", basicHeader("test", "test"))
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("testData из .traefik.yml не проходит проверку: код %d", rw.Code)
+	}
+}
