@@ -112,7 +112,7 @@ checking the `Accept` header:
   it gets a login form. Submitting the form sets a session cookie and redirects the user back to the page 
   they were trying to reach.
 
-- **Everything else (git, curl, API clients they send Accept: */*)**
+- **Everything else (git, curl, API clients they send Accept: \*/\* )**
   gets a plain `401 Unauthorized` with `WWW-Authenticate: Basic`. This is the standard challenge these 
   tools already know how to handle: they retry the same request with their own credentials in `Authorization`
   (credentials embedded in the remote URL, a credential helper, an API token – whatever they already use for that host). 
