@@ -6,7 +6,13 @@
 
 A [Traefik](https://traefik.io) middleware plugin that works like the built-in `basicAuth`
 middleware, but reads the Basic credentials from a configurable request header instead of
-always using `Authorization`.
+always using `Authorization`. This lets you gate a route with Basic Auth at the edge even when
+something downstream an OpenID Connect app, a Git server, an API – already needs
+`Authorization` for its own purposes.
+
+It also ships a [cookie-based mode](#cookie-mode-a-browser-login-form-without-breaking-gitapioidc)
+that serves a real HTML login form to browsers while leaving `Authorization` completely alone,
+so command-line clients, API tokens, and OIDC keep authenticating exactly as they did before.
 
 ## Why
 
