@@ -1,18 +1,12 @@
 # FlexBasicAuth
-<table border="0">
-  <tr>
-    <td valign="top">
-      <img src="./assets/image_flexbasicauth_400x400.png" alt="Mascot FlexBasicAuth" width="300"/>
-    </td>
-    <td valign="top">
-  
+
+<img src="./assets/image_flexbasicauth_400x400.png" alt="Mascot FlexBasicAuth" width="300" align="left"/>
+
 A [Traefik](https://traefik.io) middleware plugin that works like the built-in `basicAuth`
 middleware, but reads the Basic credentials from a configurable request header instead of
 always using `Authorization`.
 
-    </td>
-  </tr>
-</table>
+<br clear="left"/>
 
 ## Why
 
