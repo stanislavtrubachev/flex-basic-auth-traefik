@@ -89,6 +89,14 @@ func (f *FlexBasicAuth) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	if f.removeHeader {
+		req.Header.Del(f.header)
+	}
+
+	if f.headerField != "" {
+		req.Header.Set(f.headerField, username)
+	}
+
 	f.next.ServeHTTP(rw, req)
 }
 

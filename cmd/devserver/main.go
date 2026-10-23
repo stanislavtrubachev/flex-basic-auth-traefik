@@ -23,6 +23,8 @@ func main() {
 
 	cfg := flexbasicauth.CreateConfig()
 	cfg.Header = "X-Basic-Auth"
+	cfg.RemoveHeader = true
+	cfg.HeaderField = "X-Authenticated-User"
 	cfg.Users = []string{
 		"test:$2y$05$M8UUkM3YUg2Is4G9Im5R8eYBJM6I5efzIIJ0mkfUsaAU8Cyo5/7LG", // test:test (bcrypt)
 		"aprtest:$apr1$saltsalt$NBMPZFGR7yazCdGvlWJji1",                    // aprtest:test (apr1)
