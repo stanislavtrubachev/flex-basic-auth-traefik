@@ -5,13 +5,18 @@ package flexbasicauth
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/md5"
 	"crypto/sha1"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -23,6 +28,14 @@ type Config struct {
 	Realm        string   `json:"realm,omitempty" yaml:"realm,omitempty" toml:"realm,omitempty"`
 	RemoveHeader bool     `json:"removeHeader,omitempty" yaml:"removeHeader,omitempty" toml:"removeHeader,omitempty"`
 	HeaderField  string   `json:"headerField,omitempty" yaml:"headerField,omitempty" toml:"headerField,omitempty"`
+
+	// Mode выбирает режим работы: "header" (по умолчанию, чтение Basic-креденшлов
+	// из заголовка) или "cookie" (форма логина + подписанная сессионная кука).
+	Mode         string `json:"mode,omitempty" yaml:"mode,omitempty" toml:"mode,omitempty"`
+	CookieName   string `json:"cookieName,omitempty" yaml:"cookieName,omitempty" toml:"cookieName,omitempty"`
+	CookieSecret string `json:"cookieSecret,omitempty" yaml:"cookieSecret,omitempty" toml:"cookieSecret,omitempty"`
+	CookieTTL    string `json:"cookieTTL,omitempty" yaml:"cookieTTL,omitempty" toml:"cookieTTL,omitempty"`
+	LoginPath    string `json:"loginPath,omitempty" yaml:"loginPath,omitempty" toml:"loginPath,omitempty"`
 }
 
 // CreateConfig создаёт конфигурацию плагина со значениями по умолчанию.
@@ -42,6 +55,12 @@ type FlexBasicAuth struct {
 	removeHeader bool
 	headerField  string
 	users        map[string]string
+
+	mode         string
+	cookieName   string
+	cookieSecret string
+	cookieTTL    time.Duration
+	loginPath    string
 }
 
 // New создаёт экземпляр middleware.
@@ -69,6 +88,46 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		return nil, fmt.Errorf("users list cannot be empty")
 	}
 
+	mode := config.Mode
+	if mode == "" {
+		mode = "header"
+	}
+
+	if mode != "header" && mode != "cookie" {
+		return nil, fmt.Errorf("invalid mode %q: must be \"header\" or \"cookie\"", mode)
+	}
+
+	var cookieName, cookieSecret, loginPath string
+
+	var cookieTTL time.Duration
+
+	if mode == "cookie" {
+		cookieName = config.CookieName
+		if cookieName == "" {
+			return nil, fmt.Errorf("cookieName is required in cookie mode")
+		}
+
+		cookieSecret = config.CookieSecret
+		if cookieSecret == "" {
+			return nil, fmt.Errorf("cookieSecret is required in cookie mode")
+		}
+
+		loginPath = config.LoginPath
+		if loginPath == "" {
+			loginPath = "/__flexbasicauth/login"
+		}
+
+		ttlStr := config.CookieTTL
+		if ttlStr == "" {
+			ttlStr = "24h"
+		}
+
+		cookieTTL, err = time.ParseDuration(ttlStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid cookieTTL %q: %w", ttlStr, err)
+		}
+	}
+
 	return &FlexBasicAuth{
 		next:         next,
 		name:         name,
@@ -77,10 +136,24 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		removeHeader: config.RemoveHeader,
 		headerField:  config.HeaderField,
 		users:        users,
+		mode:         mode,
+		cookieName:   cookieName,
+		cookieSecret: cookieSecret,
+		cookieTTL:    cookieTTL,
+		loginPath:    loginPath,
 	}, nil
 }
 
 func (f *FlexBasicAuth) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	if f.mode == "cookie" {
+		f.serveCookieMode(rw, req)
+		return
+	}
+
+	f.serveHeaderMode(rw, req)
+}
+
+func (f *FlexBasicAuth) serveHeaderMode(rw http.ResponseWriter, req *http.Request) {
 	headerValue := req.Header.Get(f.header)
 
 	username, password, ok := parseBasicAuth(headerValue)
@@ -98,6 +171,65 @@ func (f *FlexBasicAuth) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	f.next.ServeHTTP(rw, req)
+}
+
+// serveCookieMode: если в запросе уже есть Authorization — не вмешиваемся (git/API/OIDC
+// проходят как есть). Иначе ищем валидную сессионную куку. Форма логина появится на
+// следующем этапе — пока при её отсутствии просто отказ.
+func (f *FlexBasicAuth) serveCookieMode(rw http.ResponseWriter, req *http.Request) {
+	if req.Header.Get("Authorization") != "" {
+		f.next.ServeHTTP(rw, req)
+		return
+	}
+
+	cookie, err := req.Cookie(f.cookieName)
+	if err == nil {
+		if _, ok := verifySession(cookie.Value, f.cookieSecret); ok {
+			f.next.ServeHTTP(rw, req)
+			return
+		}
+	}
+
+	rw.WriteHeader(http.StatusUnauthorized)
+}
+
+// signSession подписывает "<username>.<unix-время истечения>" через HMAC-SHA256.
+func signSession(username string, expiry time.Time, secret string) string {
+	payload := username + "." + strconv.FormatInt(expiry.Unix(), 10)
+
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(payload))
+
+	return payload + "." + hex.EncodeToString(mac.Sum(nil))
+}
+
+// verifySession проверяет подпись и срок действия куки, выставленной signSession.
+func verifySession(value, secret string) (username string, ok bool) {
+	parts := strings.SplitN(value, ".", 3)
+	if len(parts) != 3 {
+		return "", false
+	}
+
+	username, expiryStr, sig := parts[0], parts[1], parts[2]
+
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(username + "." + expiryStr))
+	expectedSig := hex.EncodeToString(mac.Sum(nil))
+
+	if !hmac.Equal([]byte(sig), []byte(expectedSig)) {
+		return "", false
+	}
+
+	expiryUnix, err := strconv.ParseInt(expiryStr, 10, 64)
+	if err != nil {
+		return "", false
+	}
+
+	if time.Now().Unix() > expiryUnix {
+		return "", false
+	}
+
+	return username, true
 }
 
 func (f *FlexBasicAuth) validate(username, password string) bool {
@@ -164,8 +296,8 @@ func parseUsers(list []string) (map[string]string, error) {
 }
 
 // verifyPassword сравнивает пароль с htpasswd-хэшем. Поддерживаются форматы
-// bcrypt ($2a$/$2b$/$2y$), MD5-crypt ($apr1$/$1$) и SHA1 ({SHA}) — как и во
-// встроенном BasicAuth Traefik.
+// bcrypt ($2a$/$2b$/$2y$), MD5-crypt ($apr1$/$1$) и SHA1 ({SHA})
+// как и во встроенном BasicAuth Traefik.
 func verifyPassword(password, hash string) (bool, error) {
 	switch {
 	case strings.HasPrefix(hash, "$2a$"), strings.HasPrefix(hash, "$2b$"), strings.HasPrefix(hash, "$2y$"):

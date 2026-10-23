@@ -5,7 +5,9 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -340,5 +342,203 @@ func TestTraefikManifestTestData(t *testing.T) {
 
 	if rw.Code != http.StatusOK {
 		t.Fatalf("testData из .traefik.yml не проходит проверку: код %d", rw.Code)
+	}
+}
+
+func TestSignVerifySessionRoundTrip(t *testing.T) {
+	value := signSession("alice", time.Now().Add(time.Hour), "s3cr3t")
+
+	username, ok := verifySession(value, "s3cr3t")
+	if !ok {
+		t.Fatal("ожидалась валидная кука")
+	}
+
+	if username != "alice" {
+		t.Fatalf("username = %q, ожидалось %q", username, "alice")
+	}
+}
+
+func TestVerifySessionExpired(t *testing.T) {
+	value := signSession("alice", time.Now().Add(-time.Hour), "s3cr3t")
+
+	if _, ok := verifySession(value, "s3cr3t"); ok {
+		t.Fatal("просроченная кука не должна проходить проверку")
+	}
+}
+
+func TestVerifySessionWrongSecret(t *testing.T) {
+	value := signSession("alice", time.Now().Add(time.Hour), "s3cr3t")
+
+	if _, ok := verifySession(value, "wrong-secret"); ok {
+		t.Fatal("кука с неверным секретом не должна проходить проверку")
+	}
+}
+
+func TestVerifySessionTampered(t *testing.T) {
+	value := signSession("alice", time.Now().Add(time.Hour), "s3cr3t")
+	tampered := "bob" + value[len("alice"):]
+
+	if _, ok := verifySession(tampered, "s3cr3t"); ok {
+		t.Fatal("подделанная кука (другой username) не должна проходить проверку")
+	}
+}
+
+func TestVerifySessionMalformed(t *testing.T) {
+	for _, v := range []string{"", "no-dots-at-all", "a.b", "a.b.c.d"} {
+		if _, ok := verifySession(v, "s3cr3t"); ok {
+			t.Fatalf("malformed-значение %q не должно проходить проверку", v)
+		}
+	}
+}
+
+func TestNewCookieMode_RequiresCookieNameAndSecret(t *testing.T) {
+	base := func() *Config {
+		cfg := CreateConfig()
+		cfg.Users = []string{bcryptUser}
+		cfg.Mode = "cookie"
+		return cfg
+	}
+
+	if _, err := New(context.Background(), http.NotFoundHandler(), base(), "t"); err == nil {
+		t.Fatal("ожидалась ошибка без cookieName/cookieSecret")
+	}
+
+	cfg := base()
+	cfg.CookieName = "flex_basic_auth_session"
+
+	if _, err := New(context.Background(), http.NotFoundHandler(), cfg, "t"); err == nil {
+		t.Fatal("ожидалась ошибка без cookieSecret")
+	}
+}
+
+func TestNewCookieMode_InvalidTTL(t *testing.T) {
+	cfg := CreateConfig()
+	cfg.Users = []string{bcryptUser}
+	cfg.Mode = "cookie"
+	cfg.CookieName = "flex_basic_auth_session"
+	cfg.CookieSecret = "s3cr3t"
+	cfg.CookieTTL = "not-a-duration"
+
+	if _, err := New(context.Background(), http.NotFoundHandler(), cfg, "t"); err == nil {
+		t.Fatal("ожидалась ошибка на невалидный cookieTTL")
+	}
+}
+
+func TestNewInvalidMode(t *testing.T) {
+	cfg := CreateConfig()
+	cfg.Users = []string{bcryptUser}
+	cfg.Mode = "something-else"
+
+	if _, err := New(context.Background(), http.NotFoundHandler(), cfg, "t"); err == nil {
+		t.Fatal("ожидалась ошибка на неизвестный mode")
+	}
+}
+
+func newCookieModeHandler(t *testing.T, backend http.Handler) http.Handler {
+	t.Helper()
+
+	cfg := CreateConfig()
+	cfg.Users = []string{bcryptUser}
+	cfg.Mode = "cookie"
+	cfg.CookieName = "flex_basic_auth_session"
+	cfg.CookieSecret = "s3cr3t"
+
+	handler, err := New(context.Background(), backend, cfg, "flex-basic-auth-cookie-test")
+	if err != nil {
+		t.Fatalf("New() вернул ошибку: %v", err)
+	}
+
+	return handler
+}
+
+func TestCookieMode_BypassOnAuthorization(t *testing.T) {
+	var gotAuthorization string
+
+	backend := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		gotAuthorization = req.Header.Get("Authorization")
+		rw.WriteHeader(http.StatusOK)
+	})
+
+	handler := newCookieModeHandler(t, backend)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer some-openid-token")
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("ожидался код 200 (bypass), получен %d", rw.Code)
+	}
+
+	if gotAuthorization != "Bearer some-openid-token" {
+		t.Fatalf("Authorization изменён: получено %q", gotAuthorization)
+	}
+}
+
+func TestCookieMode_ValidCookiePassesThrough(t *testing.T) {
+	backend := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusOK)
+	})
+
+	handler := newCookieModeHandler(t, backend)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{
+		Name:  "flex_basic_auth_session",
+		Value: signSession("test", time.Now().Add(time.Hour), "s3cr3t"),
+	})
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("ожидался код 200, получен %d", rw.Code)
+	}
+}
+
+func TestCookieMode_MissingCookieUnauthorized(t *testing.T) {
+	backend := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusOK)
+	})
+
+	handler := newCookieModeHandler(t, backend)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusUnauthorized {
+		t.Fatalf("ожидался код 401, получен %d", rw.Code)
+	}
+}
+
+func TestCookieMode_OtherCookiesUntouched(t *testing.T) {
+	var gotCookieHeader string
+
+	backend := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		gotCookieHeader = req.Header.Get("Cookie")
+		rw.WriteHeader(http.StatusOK)
+	})
+
+	handler := newCookieModeHandler(t, backend)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: "i_like_gitea", Value: "some-gitea-session"})
+	req.AddCookie(&http.Cookie{
+		Name:  "flex_basic_auth_session",
+		Value: signSession("test", time.Now().Add(time.Hour), "s3cr3t"),
+	})
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("ожидался код 200, получен %d", rw.Code)
+	}
+
+	if !strings.Contains(gotCookieHeader, "i_like_gitea=some-gitea-session") {
+		t.Fatalf("чужая кука потерялась при проксировании: Cookie=%q", gotCookieHeader)
 	}
 }
