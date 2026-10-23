@@ -1,0 +1,325 @@
+package flexbasicauth
+
+import (
+	"context"
+	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+const (
+	bcryptUser = "test:$2y$05$M8UUkM3YUg2Is4G9Im5R8eYBJM6I5efzIIJ0mkfUsaAU8Cyo5/7LG" // test:test
+	apr1User   = "aprtest:$apr1$saltsalt$NBMPZFGR7yazCdGvlWJji1"                     // aprtest:test
+	sha1User   = "shatest:{SHA}qUqP5cyxm6YcTAhz05Hph5gvu9M="                         // shatest:test
+)
+
+func basicHeader(login, password string) string {
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(login+":"+password))
+}
+
+func newTestHandler(t *testing.T, cfg *Config) http.Handler {
+	t.Helper()
+
+	backend := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusOK)
+	})
+
+	handler, err := New(context.Background(), backend, cfg, "flex-basic-auth-test")
+	if err != nil {
+		t.Fatalf("New() вернул ошибку: %v", err)
+	}
+
+	return handler
+}
+
+func TestNewRejectsEmptyUsers(t *testing.T) {
+	cfg := CreateConfig()
+
+	if _, err := New(context.Background(), http.NotFoundHandler(), cfg, "test"); err == nil {
+		t.Fatal("ожидалась ошибка при пустом списке users")
+	}
+}
+
+func TestNewRejectsInvalidUserEntry(t *testing.T) {
+	cfg := CreateConfig()
+	cfg.Users = []string{"malformed-entry-without-colon"}
+
+	if _, err := New(context.Background(), http.NotFoundHandler(), cfg, "test"); err == nil {
+		t.Fatal("ожидалась ошибка при некорректной записи users")
+	}
+}
+
+func TestServeHTTP_SuccessfulAuth(t *testing.T) {
+	tests := []struct {
+		name     string
+		userLine string
+		login    string
+		password string
+	}{
+		{"bcrypt", bcryptUser, "test", "test"},
+		{"apr1", apr1User, "aprtest", "test"},
+		{"sha1", sha1User, "shatest", "test"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := CreateConfig()
+			cfg.Users = []string{tt.userLine}
+
+			handler := newTestHandler(t, cfg)
+
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("Authorization", basicHeader(tt.login, tt.password))
+			rw := httptest.NewRecorder()
+
+			handler.ServeHTTP(rw, req)
+
+			if rw.Code != http.StatusOK {
+				t.Fatalf("ожидался код 200, получен %d", rw.Code)
+			}
+		})
+	}
+}
+
+func TestServeHTTP_WrongPassword(t *testing.T) {
+	cfg := CreateConfig()
+	cfg.Users = []string{bcryptUser}
+
+	handler := newTestHandler(t, cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", basicHeader("test", "wrong-password"))
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusUnauthorized {
+		t.Fatalf("ожидался код 401, получен %d", rw.Code)
+	}
+}
+
+func TestServeHTTP_UnknownUser(t *testing.T) {
+	cfg := CreateConfig()
+	cfg.Users = []string{bcryptUser}
+
+	handler := newTestHandler(t, cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", basicHeader("nouser", "test"))
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusUnauthorized {
+		t.Fatalf("ожидался код 401, получен %d", rw.Code)
+	}
+}
+
+func TestServeHTTP_MissingHeader(t *testing.T) {
+	cfg := CreateConfig()
+	cfg.Users = []string{bcryptUser}
+
+	handler := newTestHandler(t, cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusUnauthorized {
+		t.Fatalf("ожидался код 401, получен %d", rw.Code)
+	}
+
+	want := `Basic realm="traefik"`
+	if got := rw.Header().Get("WWW-Authenticate"); got != want {
+		t.Fatalf("WWW-Authenticate = %q, ожидалось %q", got, want)
+	}
+}
+
+func TestServeHTTP_MalformedHeader(t *testing.T) {
+	cfg := CreateConfig()
+	cfg.Users = []string{bcryptUser}
+
+	handler := newTestHandler(t, cfg)
+
+	tests := []string{
+		"Bearer sometoken",
+		"Basic not-valid-base64!!!",
+		"Basic " + base64.StdEncoding.EncodeToString([]byte("no-colon-here")),
+	}
+
+	for _, headerValue := range tests {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Authorization", headerValue)
+		rw := httptest.NewRecorder()
+
+		handler.ServeHTTP(rw, req)
+
+		if rw.Code != http.StatusUnauthorized {
+			t.Fatalf("для %q ожидался код 401, получен %d", headerValue, rw.Code)
+		}
+	}
+}
+
+func TestServeHTTP_CustomRealm(t *testing.T) {
+	cfg := CreateConfig()
+	cfg.Users = []string{bcryptUser}
+	cfg.Realm = "my-realm"
+
+	handler := newTestHandler(t, cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, req)
+
+	want := `Basic realm="my-realm"`
+	if got := rw.Header().Get("WWW-Authenticate"); got != want {
+		t.Fatalf("WWW-Authenticate = %q, ожидалось %q", got, want)
+	}
+}
+
+func TestServeHTTP_CustomHeader(t *testing.T) {
+	cfg := CreateConfig()
+	cfg.Users = []string{bcryptUser}
+	cfg.Header = "X-Basic-Auth"
+
+	handler := newTestHandler(t, cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Basic-Auth", basicHeader("test", "test"))
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("ожидался код 200, получен %d", rw.Code)
+	}
+}
+
+// TestServeHTTP_CoexistsWithBearerAuthorization проверяет ключевое требование:
+// при кастомном header заголовок Authorization не читается и не изменяется,
+// поэтому "Authorization: Bearer ..." доходит до бэкенда нетронутым.
+func TestServeHTTP_CoexistsWithBearerAuthorization(t *testing.T) {
+	cfg := CreateConfig()
+	cfg.Users = []string{bcryptUser}
+	cfg.Header = "X-Basic-Auth"
+
+	var gotAuthorization string
+	backend := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		gotAuthorization = req.Header.Get("Authorization")
+		rw.WriteHeader(http.StatusOK)
+	})
+
+	handler, err := New(context.Background(), backend, cfg, "flex-basic-auth-test")
+	if err != nil {
+		t.Fatalf("New() вернул ошибку: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Basic-Auth", basicHeader("test", "test"))
+	req.Header.Set("Authorization", "Bearer some-openid-token")
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("ожидался код 200, получен %d", rw.Code)
+	}
+
+	if gotAuthorization != "Bearer some-openid-token" {
+		t.Fatalf("Authorization изменён: получено %q, ожидалось %q", gotAuthorization, "Bearer some-openid-token")
+	}
+}
+
+func TestServeHTTP_RemoveHeader(t *testing.T) {
+	cfg := CreateConfig()
+	cfg.Users = []string{bcryptUser}
+	cfg.Header = "X-Basic-Auth"
+	cfg.RemoveHeader = true
+
+	var gotHeader string
+	headerPresent := true
+	backend := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		gotHeader = req.Header.Get("X-Basic-Auth")
+		_, headerPresent = req.Header["X-Basic-Auth"]
+		rw.WriteHeader(http.StatusOK)
+	})
+
+	handler, err := New(context.Background(), backend, cfg, "flex-basic-auth-test")
+	if err != nil {
+		t.Fatalf("New() вернул ошибку: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Basic-Auth", basicHeader("test", "test"))
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("ожидался код 200, получен %d", rw.Code)
+	}
+
+	if headerPresent || gotHeader != "" {
+		t.Fatalf("заголовок X-Basic-Auth должен быть удалён, получено %q", gotHeader)
+	}
+}
+
+func TestServeHTTP_HeaderField(t *testing.T) {
+	cfg := CreateConfig()
+	cfg.Users = []string{bcryptUser}
+	cfg.HeaderField = "X-Authenticated-User"
+
+	var gotUser string
+	backend := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		gotUser = req.Header.Get("X-Authenticated-User")
+		rw.WriteHeader(http.StatusOK)
+	})
+
+	handler, err := New(context.Background(), backend, cfg, "flex-basic-auth-test")
+	if err != nil {
+		t.Fatalf("New() вернул ошибку: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", basicHeader("test", "test"))
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("ожидался код 200, получен %d", rw.Code)
+	}
+
+	if gotUser != "test" {
+		t.Fatalf("X-Authenticated-User = %q, ожидалось %q", gotUser, "test")
+	}
+}
+
+func TestServeHTTP_HeaderFieldEmptyMeansNotSet(t *testing.T) {
+	cfg := CreateConfig()
+	cfg.Users = []string{bcryptUser}
+
+	var headerPresent bool
+	backend := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		_, headerPresent = req.Header["X-Authenticated-User"]
+		rw.WriteHeader(http.StatusOK)
+	})
+
+	handler, err := New(context.Background(), backend, cfg, "flex-basic-auth-test")
+	if err != nil {
+		t.Fatalf("New() вернул ошибку: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", basicHeader("test", "test"))
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, req)
+
+	if headerPresent {
+		t.Fatal("заголовок X-Authenticated-User не должен выставляться при пустом headerField")
+	}
+}
