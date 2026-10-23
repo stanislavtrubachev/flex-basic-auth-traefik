@@ -87,8 +87,9 @@ credentials through `Authorization`. If you want a normal-looking browser login 
 extension, no custom header) on a host where `Authorization` is already used for something
 else, header mode can't do it, since the native popup would collide with that.
 
-That's exactly the case for something like a Gitea server: `git clone`/`push` over HTTPS and
-API tokens all use `Authorization`. Set `mode: cookie` instead, and FlexBasicAuth serves its own
+That's exactly the case for a backend that already relies on `Authorization` for its own clients,
+for example a Git server where `git clone`/`push` over HTTPS and API tokens all use
+`Authorization`. Set `mode: cookie` instead, and FlexBasicAuth serves its own
 login form and, after a successful login, sets a signed session cookie. Browsers send cookies
 automatically on every request, so the user logs in once and stays logged in, without ever
 touching `Authorization`.
@@ -116,7 +117,7 @@ checking the `Accept` header:
   gets a plain `401 Unauthorized` with `WWW-Authenticate: Basic`. This is the standard challenge these 
   tools already know how to handle: they retry the same request with their own credentials in `Authorization`
   (credentials embedded in the remote URL, a credential helper, an API token – whatever they already use for that host). 
-  That retry then passes straight through by the rule above, so the backend's own auth (Gitea, an API, OIDC) 
+  That retry then passes straight through by the rule above, so the backend's own auth (a Git server, an API, OIDC) 
   handles it exactly as if FlexBasicAuth weren't there.
 
 In short: a browser gets a real login page; a command-line client gets a normal 401 challenge
@@ -151,7 +152,7 @@ Each person logs in with their own entry, and the session cookie is signed with 
 that actually logged in, so everyone gets their own independent session. This is still a gate
 in front of the backend, not a replacement for whatever login system the backend itself has:
 these credentials only control who gets past FlexBasicAuth, they have nothing to do with the
-backend's own user accounts (a Gitea login, API tokens, etc.), which keep working exactly as
+backend's own user accounts (a Git server login, API tokens, etc.), which keep working exactly as
 they did before, over `Authorization`.
 
 ### Example: gating a Gitea web UI without breaking git/API
