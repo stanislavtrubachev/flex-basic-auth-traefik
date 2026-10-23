@@ -1,3 +1,7 @@
 module github.com/stanislavtrubachev/flex-basic-auth-traefik
 
-go 1.21
+go 1.23.0
+
+toolchain go1.23.5
+
+require golang.org/x/crypto v0.39.0

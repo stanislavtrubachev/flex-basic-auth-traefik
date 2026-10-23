@@ -5,10 +5,15 @@ package flexbasicauth
 
 import (
 	"context"
+	"crypto/md5"
+	"crypto/sha1"
+	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
 	"net/http"
 	"strings"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // Config — конфигурация плагина.
@@ -36,6 +41,7 @@ type FlexBasicAuth struct {
 	realm        string
 	removeHeader bool
 	headerField  string
+	users        map[string]string
 }
 
 // New создаёт экземпляр middleware.
@@ -54,6 +60,15 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		realm = "traefik"
 	}
 
+	users, err := parseUsers(config.Users)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(users) == 0 {
+		return nil, fmt.Errorf("users list cannot be empty")
+	}
+
 	return &FlexBasicAuth{
 		next:         next,
 		name:         name,
@@ -61,20 +76,34 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		realm:        realm,
 		removeHeader: config.RemoveHeader,
 		headerField:  config.HeaderField,
+		users:        users,
 	}, nil
 }
 
 func (f *FlexBasicAuth) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	headerValue := req.Header.Get(f.header)
 
-	_, _, ok := parseBasicAuth(headerValue)
-	if !ok {
+	username, password, ok := parseBasicAuth(headerValue)
+	if !ok || !f.validate(username, password) {
 		f.unauthorized(rw)
 		return
 	}
 
-	// Проверка пароля по списку users появится на следующем этапе.
 	f.next.ServeHTTP(rw, req)
+}
+
+func (f *FlexBasicAuth) validate(username, password string) bool {
+	hash, ok := f.users[username]
+	if !ok {
+		return false
+	}
+
+	ok, err := verifyPassword(password, hash)
+	if err != nil {
+		return false
+	}
+
+	return ok
 }
 
 func (f *FlexBasicAuth) unauthorized(rw http.ResponseWriter) {
@@ -103,4 +132,160 @@ func parseBasicAuth(headerValue string) (username, password string, ok bool) {
 	}
 
 	return pair[:idx], pair[idx+1:], true
+}
+
+// parseUsers разбирает список users в формате "login:htpasswd-хэш".
+func parseUsers(list []string) (map[string]string, error) {
+	users := make(map[string]string, len(list))
+
+	for _, entry := range list {
+		entry = strings.TrimSpace(entry)
+		if entry == "" || strings.HasPrefix(entry, "#") {
+			continue
+		}
+
+		idx := strings.IndexByte(entry, ':')
+		if idx <= 0 || idx == len(entry)-1 {
+			return nil, fmt.Errorf("invalid user entry %q: expected format \"login:hash\"", entry)
+		}
+
+		users[entry[:idx]] = entry[idx+1:]
+	}
+
+	return users, nil
+}
+
+// verifyPassword сравнивает пароль с htpasswd-хэшем. Поддерживаются форматы
+// bcrypt ($2a$/$2b$/$2y$), MD5-crypt ($apr1$/$1$) и SHA1 ({SHA}) — как и во
+// встроенном BasicAuth Traefik.
+func verifyPassword(password, hash string) (bool, error) {
+	switch {
+	case strings.HasPrefix(hash, "$2a$"), strings.HasPrefix(hash, "$2b$"), strings.HasPrefix(hash, "$2y$"):
+		err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+		return err == nil, nil
+
+	case strings.HasPrefix(hash, "$apr1$"), strings.HasPrefix(hash, "$1$"):
+		computed, err := md5Crypt(password, hash)
+		if err != nil {
+			return false, err
+		}
+		return subtle.ConstantTimeCompare([]byte(computed), []byte(hash)) == 1, nil
+
+	case strings.HasPrefix(hash, "{SHA}"):
+		sum := sha1.Sum([]byte(password))
+		computed := "{SHA}" + base64.StdEncoding.EncodeToString(sum[:])
+		return subtle.ConstantTimeCompare([]byte(computed), []byte(hash)) == 1, nil
+
+	default:
+		return false, fmt.Errorf("unsupported password hash format")
+	}
+}
+
+// md5Crypt вычисляет MD5-crypt хэш (алгоритм FreeBSD/Apache apr1) для пароля,
+// используя соль и magic-строку ("1" или "apr1"), извлечённые из образца хэша.
+func md5Crypt(password, sample string) (string, error) {
+	parts := strings.Split(sample, "$")
+	if len(parts) < 3 {
+		return "", fmt.Errorf("invalid md5-crypt hash format")
+	}
+
+	magic := parts[1]
+	if magic != "1" && magic != "apr1" {
+		return "", fmt.Errorf("unsupported md5-crypt magic %q", magic)
+	}
+
+	salt := parts[2]
+	if len(salt) > 8 {
+		salt = salt[:8]
+	}
+
+	return md5CryptCompute(password, salt, magic), nil
+}
+
+const md5CryptAlphabet = "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+func md5CryptCompute(password, salt, magic string) string {
+	pwd := []byte(password)
+
+	ctx1 := md5.New()
+	ctx1.Write(pwd)
+	ctx1.Write([]byte("$"))
+	ctx1.Write([]byte(magic))
+	ctx1.Write([]byte("$"))
+	ctx1.Write([]byte(salt))
+
+	ctx2 := md5.New()
+	ctx2.Write(pwd)
+	ctx2.Write([]byte(salt))
+	ctx2.Write(pwd)
+	final := ctx2.Sum(nil)
+
+	for pl := len(pwd); pl > 0; pl -= 16 {
+		n := pl
+		if n > 16 {
+			n = 16
+		}
+		ctx1.Write(final[:n])
+	}
+
+	for i := len(pwd); i != 0; i >>= 1 {
+		if i&1 != 0 {
+			ctx1.Write([]byte{0})
+		} else {
+			ctx1.Write(pwd[:1])
+		}
+	}
+
+	result := ctx1.Sum(nil)
+
+	for i := 0; i < 1000; i++ {
+		ctx3 := md5.New()
+
+		if i&1 != 0 {
+			ctx3.Write(pwd)
+		} else {
+			ctx3.Write(result)
+		}
+
+		if i%3 != 0 {
+			ctx3.Write([]byte(salt))
+		}
+
+		if i%7 != 0 {
+			ctx3.Write(pwd)
+		}
+
+		if i&1 != 0 {
+			ctx3.Write(result)
+		} else {
+			ctx3.Write(pwd)
+		}
+
+		result = ctx3.Sum(nil)
+	}
+
+	var sb strings.Builder
+	sb.WriteByte('$')
+	sb.WriteString(magic)
+	sb.WriteByte('$')
+	sb.WriteString(salt)
+	sb.WriteByte('$')
+
+	triplets := [5][3]int{{0, 6, 12}, {1, 7, 13}, {2, 8, 14}, {3, 9, 15}, {4, 10, 5}}
+	for _, t := range triplets {
+		v := uint32(result[t[0]])<<16 | uint32(result[t[1]])<<8 | uint32(result[t[2]])
+		sb.WriteString(to64(v, 4))
+	}
+	sb.WriteString(to64(uint32(result[11]), 2))
+
+	return sb.String()
+}
+
+func to64(value uint32, size int) string {
+	buf := make([]byte, size)
+	for i := 0; i < size; i++ {
+		buf[i] = md5CryptAlphabet[value&0x3f]
+		value >>= 6
+	}
+	return string(buf)
 }
