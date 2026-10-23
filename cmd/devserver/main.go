@@ -36,6 +36,24 @@ func main() {
 		log.Fatal(err)
 	}
 
-	log.Println("listening on :8080, header =", cfg.Header)
+	cookieCfg := flexbasicauth.CreateConfig()
+	cookieCfg.Mode = "cookie"
+	cookieCfg.CookieName = "flex_basic_auth_session"
+	cookieCfg.CookieSecret = "dev-secret-not-for-prod"
+	cookieCfg.Users = []string{
+		"test:$2y$05$M8UUkM3YUg2Is4G9Im5R8eYBJM6I5efzIIJ0mkfUsaAU8Cyo5/7LG", // test:test (bcrypt)
+	}
+
+	cookieHandler, err := flexbasicauth.New(context.Background(), backend, cookieCfg, "flex-basic-auth-dev-cookie")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	go func() {
+		log.Println("listening on :8081 (cookie mode), loginPath =", "/__flexbasicauth/login")
+		log.Fatal(http.ListenAndServe(":8081", cookieHandler))
+	}()
+
+	log.Println("listening on :8080 (header mode), header =", cfg.Header)
 	log.Fatal(http.ListenAndServe(":8080", handler))
 }
