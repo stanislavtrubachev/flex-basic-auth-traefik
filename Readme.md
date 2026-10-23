@@ -108,14 +108,16 @@ For requests with no `Authorization` and no valid session cookie yet, FlexBasicA
 decide whether to show an HTML login page or a plain HTTP challenge, and it does that by
 checking the `Accept` header:
 
-- **Browser** (`Accept: text/html,...`) → gets the login form. Submitting it sets the session
-  cookie and redirects back to the page the user was trying to reach.
-- **Everything else** (`git`, `curl`, API clients, they send `Accept: */*`) → gets a plain
-  `401 Unauthorized` with `WWW-Authenticate: Basic`. That's the standard challenge these tools
-  already know how to react to: they retry the same request with their own `Authorization`
-  (credentials embedded in the remote URL, a credential helper, an API token, whatever they
-  already use for that host), which then goes straight through by the rule above, so the
-  backend's own auth (Gitea, an API, OIDC) handles it exactly as if FlexBasicAuth weren't there.
+- **If a browser makes the request** (`Accept: text/html,...`):
+  it gets a login form. Submitting the form sets a session cookie and redirects the user back to the page 
+  they were trying to reach.
+
+- **Everything else (git, curl, API clients they send Accept: */*)**
+  gets a plain `401 Unauthorized` with `WWW-Authenticate: Basic`. This is the standard challenge these 
+  tools already know how to handle: they retry the same request with their own credentials in `Authorization`
+  (credentials embedded in the remote URL, a credential helper, an API token – whatever they already use for that host). 
+  That retry then passes straight through by the rule above, so the backend's own auth (Gitea, an API, OIDC) 
+  handles it exactly as if FlexBasicAuth weren't there.
 
 In short: a browser gets a real login page; a command-line client gets a normal 401 challenge
 and authenticates however it already does against the backend. Neither one ever has to know
