@@ -290,6 +290,28 @@ htpasswd -nbs user password      # SHA1
 openssl passwd -apr1 user        # MD5-crypt / apr1
 ```
 
+## Installing from the official plugin catalog
+
+FlexBasicAuth is published on the [Traefik Plugin Catalog](https://plugins.traefik.io/plugins/6adc664bb924de020cfea82e/flex-basic-auth).
+This is the recommended way to install it when Traefik can reach the plugin registry at
+startup; enable it in the static configuration with `experimental.plugins` instead of
+`experimental.localPlugins`:
+
+```yaml
+experimental:
+  plugins:
+    flexbasicauth:
+      moduleName: github.com/stanislavtrubachev/flex-basic-auth-traefik
+      version: v0.3.2 # pin to a tagged release from the catalog page
+```
+
+The dynamic configuration (middleware setup) is identical regardless of how the plugin is
+installed; see [Configuration](#configuration) above and the examples throughout this README.
+
+If Traefik can't reach the registry backend at startup (an air-gapped host), use
+[local usage](#local-usage-plugin-without-using-a-publication) or
+[installing without internet access](#installing-without-internet-access) instead.
+
 ## Local usage plugin (without using a publication)
 
 Traefik plugins run through [yaegi](https://github.com/traefik/yaegi), not a compiler. Third-party
