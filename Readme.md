@@ -236,8 +236,8 @@ instead of trusting non-browser clients, it runs the exact same check as header 
 the configured `header`, validated against `users`, no exceptions. Browsers (`Accept:
 text/html`) still get the cookie-mode login form.
 
-- **Browser** (`Accept: text/html,...`) → login form + session cookie, identical to cookie mode.
-- **Everything else** (`git`, `curl`, API clients) → header-mode check: a valid, configured
+- **Browser** (`Accept: text/html,...`) – login form + session cookie, identical to cookie mode.
+- **Everything else** (`git`, `curl`, API clients) – header-mode check: a valid, configured
   `header` is required on every request, or it's a `401`. There is no exception for requests
   that happen to carry `Authorization`.
 
