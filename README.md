@@ -14,6 +14,25 @@ It also ships a [cookie-based mode](#cookie-mode-a-browser-login-form-without-br
 that serves a real HTML login form to browsers while leaving `Authorization` completely alone,
 so command-line clients, API tokens, and OIDC keep authenticating exactly as they did before.
 
+## Table of contents
+
+- [Modes](#modes)
+- [Why](#why)
+- [Configuration](#configuration)
+  - [Example: BasicAuth + OpenID on the same route](#example-basicauth--openid-on-the-same-route)
+  - [Kubernetes (IngressRoute / Middleware CRD)](#kubernetes-ingressroute--middleware-crd)
+  - [Example: protecting `git clone`/`push` without colliding with the backend's own auth](#example-protecting-git-clonepush-without-colliding-with-the-backends-own-auth)
+- [Cookie mode: a browser login form without breaking git/API/OIDC](#cookie-mode-a-browser-login-form-without-breaking-gitapioidc)
+  - [How browser and command-line clients are told apart](#how-browser-and-command-line-clients-are-told-apart)
+  - [Example: gating a self-hosted Git server's web UI without breaking git/API](#example-gating-a-self-hosted-git-servers-web-ui-without-breaking-gitapi)
+- [Hybrid mode: header-mode gating for everyone, a login form for browsers](#hybrid-mode-header-mode-gating-for-everyone-a-login-form-for-browsers)
+- [Generating password hashes](#generating-password-hashes)
+- [Installing from the official plugin catalog](#installing-from-the-official-plugin-catalog)
+- [Local usage plugin (without using a publication)](#local-usage-plugin-without-using-a-publication)
+- [Installing without internet access](#installing-without-internet-access)
+- [Development](#development)
+- [License](#license)
+
 ## Modes
 
 FlexBasicAuth runs in one of three modes, selected with the `mode` option:
