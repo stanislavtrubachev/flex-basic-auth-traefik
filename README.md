@@ -340,3 +340,7 @@ restart Traefik. No outbound network access is needed at any point.
 go test ./... -race -cover
 go run ./cmd/devserver   # standalone server for manual testing, not part of the plugin
 ```
+
+## License
+
+[MIT](./LICENSE)

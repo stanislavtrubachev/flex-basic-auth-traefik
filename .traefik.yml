@@ -2,6 +2,7 @@ displayName: Flex Basic Auth
 type: middleware
 import: github.com/stanislavtrubachev/flex-basic-auth-traefik
 basePkg: flexbasicauth
+compatibility: ">= 2.3.0"
 
 summary: 'BasicAuth-compatible middleware that reads credentials from a configurable request header instead of Authorization, allowing BasicAuth to coexist with Bearer tokens (e.g. OpenID Connect) on the same route.'
 
