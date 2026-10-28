@@ -178,7 +178,10 @@ func (f *FlexBasicAuth) serveHeaderMode(rw http.ResponseWriter, req *http.Reques
 
 // serveCookieMode: POST на loginPath обрабатывается как попытка логина. Иначе, если в
 // запросе уже есть Authorization — не вмешиваемся (git/API/OIDC проходят как есть).
-// Иначе ищем валидную сессионную куку; при её отсутствии отдаём форму логина.
+// Иначе ищем валидную сессионную куку. Если нет ни Authorization, ни куки — решаем по
+// Accept: браузерам (text/html) показываем форму логина, всем остальным non-browser
+// клиентам (git/curl/API/go-get и т.п.) пропускаем запрос дальше без проверки —
+// cookie-режим защищает только браузерный UI, не трогает никого другого.
 func (f *FlexBasicAuth) serveCookieMode(rw http.ResponseWriter, req *http.Request) {
 	if req.Method == http.MethodPost && req.URL.Path == f.loginPath {
 		f.handleLogin(rw, req)
@@ -198,11 +201,16 @@ func (f *FlexBasicAuth) serveCookieMode(rw http.ResponseWriter, req *http.Reques
 	}
 
 	// Нет Authorization, нет куки. Браузерам (Accept: text/html) показываем свою форму.
-	// Остальным клиентам (git/curl/API — Accept: */*) отдаём обычный 401 с
-	// WWW-Authenticate: Basic, чтобы они повторили запрос со своим Authorization
-	// (который дальше пройдёт через bypass-правило выше напрямую в бэкенд).
+	// Остальных клиентов (git/curl/API/go-get — Accept: */*) в cookie-режиме вообще не
+	// трогаем: это и есть смысл cookie-режима — только браузеры получают форму логина,
+	// все остальные идут прямо в бэкенд без какой-либо проверки со стороны FlexBasicAuth
+	// (авторизацию, если она нужна, обеспечивает сам бэкенд — git-токены, OIDC и т.п.).
+	// Раньше здесь был безусловный unauthorized() для non-browser без Authorization —
+	// это ломало ЛЮБОЙ non-browser клиент, который по своей природе не шлёт Authorization
+	// заранее (например, "go get"/"go mod" discovery-запрос), даже если бэкенд сам
+	// готов ответить анонимно.
 	if !strings.Contains(req.Header.Get("Accept"), "text/html") {
-		f.unauthorized(rw)
+		f.next.ServeHTTP(rw, req)
 		return
 	}
 

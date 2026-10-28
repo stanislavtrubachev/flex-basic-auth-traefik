@@ -653,7 +653,10 @@ func TestCookieMode_ValidCookiePassesThrough(t *testing.T) {
 	}
 }
 
-func TestCookieMode_MissingCookieUnauthorized(t *testing.T) {
+// TestCookieMode_BrowserMissingCookieUnauthorized — браузер (Accept: text/html)
+// без Authorization/куки получает форму логина (код 401, см. writeLoginPage) —
+// это единственный случай, где cookie-режим реально что-то блокирует.
+func TestCookieMode_BrowserMissingCookieUnauthorized(t *testing.T) {
 	backend := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
 		rw.WriteHeader(http.StatusOK)
 	})
@@ -661,12 +664,44 @@ func TestCookieMode_MissingCookieUnauthorized(t *testing.T) {
 	handler := newCookieModeHandler(t, backend)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept", "text/html")
 	rw := httptest.NewRecorder()
 
 	handler.ServeHTTP(rw, req)
 
 	if rw.Code != http.StatusUnauthorized {
 		t.Fatalf("ожидался код 401, получен %d", rw.Code)
+	}
+}
+
+// TestCookieMode_NonBrowserMissingAuthPassesThrough — не-браузерный клиент
+// (Accept: */* или вообще без Accept — git/curl/API/"go get" discovery) без
+// Authorization и без куки должен пройти НАПРЯМУЮ в бэкенд, а не получить 401:
+// смысл cookie-режима — защищать только браузерный UI, остальных не трогать
+// вообще. Раньше тут был баг — такой клиент безусловно получал 401
+// (см. serveCookieMode до правки), что ломало любой non-browser клиент, не
+// отправляющий Authorization заранее (например, "go get"/"go mod" discovery).
+func TestCookieMode_NonBrowserMissingAuthPassesThrough(t *testing.T) {
+	var called bool
+	backend := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		called = true
+		rw.WriteHeader(http.StatusOK)
+	})
+
+	handler := newCookieModeHandler(t, backend)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	// Accept умышленно не задаём — у httptest.NewRequest он пустой по
+	// умолчанию, что ведёт себя так же, как "*/*" (не содержит "text/html").
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("ожидался код 200 (passthrough), получен %d", rw.Code)
+	}
+	if !called {
+		t.Fatal("backend не был вызван — non-browser клиент заблокирован вместо passthrough")
 	}
 }
 
@@ -825,12 +860,19 @@ func TestCookieMode_LoginWrongPassword(t *testing.T) {
 	}
 }
 
-// TestCookieMode_NonBrowserGetsWWWAuthenticate — регрессия на кейс "git push ломается":
-// клиенты без Accept: text/html (git/curl/API) должны получать обычный 401 +
-// WWW-Authenticate: Basic, а не HTML-форму, иначе они не поймут, что нужно повторить
-// запрос с Authorization (который дальше ушёл бы напрямую в бэкенд по bypass-правилу).
-func TestCookieMode_NonBrowserGetsWWWAuthenticate(t *testing.T) {
+// TestCookieMode_NonBrowserNeverGetsLoginForm — регрессия на кейс "git push
+// ломается": клиенты без Accept: text/html (git/curl/API/go-get) никогда не
+// должны получать HTML-форму логина — FlexBasicAuth в cookie-режиме должен их
+// вообще не трогать (passthrough в бэкенд), а не блокировать своей формой.
+// Раньше (до правки non-browser passthrough) FlexBasicAuth сам отдавал тут
+// 401+WWW-Authenticate; теперь он просто пропускает запрос дальше — реальный
+// 401/challenge, если он нужен, отдаёт сам бэкенд (например, git-smart-http
+// Gitea для защищённого репозитория). Важная часть регрессии (нет HTML-формы)
+// остаётся верной при любом из двух механизмов.
+func TestCookieMode_NonBrowserNeverGetsLoginForm(t *testing.T) {
+	var called bool
 	backend := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		called = true
 		rw.WriteHeader(http.StatusOK)
 	})
 
@@ -843,15 +885,15 @@ func TestCookieMode_NonBrowserGetsWWWAuthenticate(t *testing.T) {
 
 	handler.ServeHTTP(rw, req)
 
-	if rw.Code != http.StatusUnauthorized {
-		t.Fatalf("ожидался код 401, получен %d", rw.Code)
+	if !called {
+		t.Fatal("backend не был вызван — git-клиент заблокирован вместо passthrough")
 	}
 
-	if got := rw.Header().Get("WWW-Authenticate"); got != `Basic realm="traefik"` {
-		t.Fatalf("WWW-Authenticate = %q, ожидалось Basic-challenge", got)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("ожидался код 200 (passthrough в бэкенд), получен %d", rw.Code)
 	}
 
 	if strings.Contains(rw.Body.String(), "<form") {
-		t.Fatal("нечто-браузерному клиенту не должна отдаваться HTML-форма логина")
+		t.Fatal("не-браузерному клиенту не должна отдаваться HTML-форма логина")
 	}
 }
